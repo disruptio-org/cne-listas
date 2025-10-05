@@ -49,20 +49,49 @@ class DocumentRenderer:
 
     def _render_pdf(self, payload: bytes, *, source: str) -> List[RenderedPage]:
         if pdfplumber is None:
-            return []
+            raise RuntimeError(
+                "pdfplumber is required to render PDF documents. Install the optional "
+                "dependency or provide a non-PDF payload."
+            )
 
         pages: List[RenderedPage] = []
         with pdfplumber.open(BytesIO(payload)) as pdf:  # pragma: no cover - heavy dependency
             for index, page in enumerate(pdf.pages, start=1):
                 text = page.extract_text() or ""
+                if text.strip():
+                    payload_bytes = text.encode("utf-8")
+                else:
+                    payload_bytes = self._rasterize_page(page, page_number=index, source=source)
+
                 pages.append(
                     RenderedPage(
                         page_number=index,
-                        payload=text.encode("utf-8"),
+                        payload=payload_bytes,
                         source=f"{source}#page={index}",
                     )
                 )
         return pages
+
+    def _rasterize_page(self, page: "pdfplumber.page.Page", *, page_number: int, source: str) -> bytes:
+        try:  # pragma: no cover - relies on pillow/pdfplumber internals
+            page_image = page.to_image(resolution=200)
+            image = getattr(page_image, "original", None)
+            if image is None:
+                raise AttributeError("PageImage missing original image")
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            data = buffer.getvalue()
+        except Exception as exc:  # pragma: no cover - defensive path
+            raise RuntimeError(
+                f"Unable to rasterize PDF page {page_number} from {source}: {exc}"
+            ) from exc
+
+        if not data:
+            raise RuntimeError(
+                f"Rasterization produced empty payload for page {page_number} from {source}"
+            )
+
+        return data
 
 
 __all__ = ["DocumentRenderer", "RenderedPage"]
