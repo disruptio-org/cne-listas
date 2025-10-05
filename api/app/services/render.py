@@ -57,11 +57,17 @@ class DocumentRenderer:
         pages: List[RenderedPage] = []
         with pdfplumber.open(BytesIO(payload)) as pdf:  # pragma: no cover - heavy dependency
             for index, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                if text.strip():
+                try:
+                    text = page.extract_text()
+                except Exception:  # pragma: no cover - defensive path
+                    text = None
+
+                if isinstance(text, str) and text.strip():
                     payload_bytes = text.encode("utf-8")
                 else:
-                    payload_bytes = self._rasterize_page(page, page_number=index, source=source)
+                    payload_bytes = self._rasterize_page(
+                        page, page_number=index, source=source
+                    )
 
                 pages.append(
                     RenderedPage(
