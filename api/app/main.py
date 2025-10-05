@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse
 
 from .services.pipeline import ExtractionPipeline
 from .services.csv_writer import CSVWriter
+from .services.validate import ValidationError
 
 
 app = FastAPI(title="CNE Listas Extraction Service", version="1.0.0")
@@ -40,7 +41,14 @@ async def ocr_to_csv(
     rows = []
     for upload in uploads:
         payload = await upload.read()
-        document_rows = pipeline.run(payload, filename=upload.filename, content_type=upload.content_type)
+        try:
+            document_rows = pipeline.run(
+                payload,
+                filename=upload.filename,
+                content_type=upload.content_type,
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         rows.extend(document_rows)
 
     csv_content = csv_writer.write(rows)
