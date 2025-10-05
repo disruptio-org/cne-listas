@@ -38,17 +38,20 @@ async def ocr_to_csv(
     if not uploads:
         raise HTTPException(status_code=400, detail="At least one file must be provided")
 
-    rows = []
-    for upload in uploads:
-        payload = await upload.read()
+    def _run_pipeline(upload: UploadFile, payload: bytes):
         try:
-            document_rows = pipeline.run(
+            return pipeline.run(
                 payload,
                 filename=upload.filename,
                 content_type=upload.content_type,
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    rows = []
+    for upload in uploads:
+        payload = await upload.read()
+        document_rows = _run_pipeline(upload, payload)
         rows.extend(document_rows)
 
     csv_content = csv_writer.write(rows)
