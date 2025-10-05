@@ -81,3 +81,22 @@ def test_render_pdf_raises_when_pdfplumber_missing(monkeypatch):
 
     with pytest.raises(RuntimeError, match="pdfplumber is required"):
         renderer.render(b"%PDF-1.4", filename="missing.pdf")
+
+
+def test_render_pdf_without_extractable_text_returns_image_bytes():
+    pytest.importorskip("pdfplumber")
+
+    pdf_path = PROJECT_ROOT / "tests" / "fixtures" / "blank.pdf"
+    payload = pdf_path.read_bytes()
+
+    renderer = render.DocumentRenderer()
+
+    try:
+        pages = renderer.render(payload, filename="blank.pdf")
+    except RuntimeError as exc:  # pragma: no cover - dependency missing at runtime
+        pytest.skip(f"Rasterization backend unavailable: {exc}")
+
+    assert len(pages) == 1
+    page = pages[0]
+    assert page.payload, "Rasterized payload should not be empty"
+    assert page.payload.startswith(b"\x89PNG"), "Expected PNG rasterized payload"
