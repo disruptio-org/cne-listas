@@ -1,58 +1,102 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
+import types
+from pathlib import Path
+
 import pytest
 
-pytest.importorskip("pydantic")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
-from api.app.services.render import DocumentRenderer, RenderedPage
+_render_path = PROJECT_ROOT / "api" / "app" / "services" / "render.py"
+module_name = "api.app.services.render"
+spec = importlib.util.spec_from_file_location(module_name, _render_path)
+assert spec and spec.loader is not None
 
+for package_name in ("api", "api.app", "api.app.services"):
+    if package_name not in sys.modules:
+        package_module = types.ModuleType(package_name)
+        package_module.__path__ = []  # type: ignore[attr-defined]
+        sys.modules[package_name] = package_module
 
-class _FakeImage:
-    def save(self, buffer, format="PNG") -> None:
-        # minimal PNG header followed by placeholder data
-        buffer.write(b"\x89PNG\r\n\x1a\nFAKE")
-
-
-class DummyPreview:
-    def __init__(self, image) -> None:
-        self.original = image
-
-
-def _build_dummy_pdf(pages):
-    class DummyPDF:
-        def __init__(self, pdf_pages):
-            self.pages = pdf_pages
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    return DummyPDF(pages)
+render = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = render
+spec.loader.exec_module(render)
 
 
-class DummyPage:
-    def __init__(self) -> None:
-        self._image = _FakeImage()
+class _FakeOriginalImage:
+    def save(self, buffer, format="PNG"):
+        buffer.write(b"fake-image-bytes")
 
+
+class _FakePageImage:
+    def __init__(self):
+        self.original = _FakeOriginalImage()
+
+
+class _FakePage:
     def extract_text(self):
         return ""
 
-    def to_image(self, resolution: int = 200):  # pragma: no cover - simple stub
-        return DummyPreview(self._image)
+    def to_image(self, resolution=200):
+        assert resolution == 200
+        return _FakePageImage()
 
 
-def test_render_pdf_without_text_returns_image_bytes(monkeypatch):
-    renderer = DocumentRenderer()
-    dummy_page = DummyPage()
-    dummy_pdf = _build_dummy_pdf([dummy_page])
+class _FakePDF:
+    def __init__(self, pages):
+        self.pages = pages
 
-    monkeypatch.setattr(renderer, "_open_pdf", lambda buffer: dummy_pdf)
+    def __enter__(self):
+        return self
 
-    pages = renderer._render_pdf(b"%PDF-1.4", source="dummy.pdf")
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def _fake_open(_):
+    return _FakePDF([_FakePage()])
+
+
+def test_render_pdf_without_text_rasterizes_to_image(monkeypatch):
+    fake_pdfplumber = types.SimpleNamespace(open=_fake_open)
+    monkeypatch.setattr(render, "pdfplumber", fake_pdfplumber)
+
+    renderer = render.DocumentRenderer()
+    pages = renderer.render(b"%PDF-FAKE", filename="mock.pdf")
 
     assert len(pages) == 1
-    page: RenderedPage = pages[0]
-    assert page.payload, "Expected payload to contain rasterized image bytes"
-    assert page.payload.startswith(b"\x89PNG")
+    page = pages[0]
+    assert page.page_number == 1
+    assert page.source == "mock.pdf#page=1"
+    assert page.payload == b"fake-image-bytes"
+
+
+def test_render_pdf_raises_when_pdfplumber_missing(monkeypatch):
+    monkeypatch.setattr(render, "pdfplumber", None)
+
+    renderer = render.DocumentRenderer()
+
+    with pytest.raises(RuntimeError, match="pdfplumber is required"):
+        renderer.render(b"%PDF-1.4", filename="missing.pdf")
+
+
+def test_render_pdf_without_extractable_text_returns_image_bytes():
+    pytest.importorskip("pdfplumber")
+
+    pdf_path = PROJECT_ROOT / "tests" / "fixtures" / "blank.pdf"
+    payload = pdf_path.read_bytes()
+
+    renderer = render.DocumentRenderer()
+
+    try:
+        pages = renderer.render(payload, filename="blank.pdf")
+    except RuntimeError as exc:  # pragma: no cover - dependency missing at runtime
+        pytest.skip(f"Rasterization backend unavailable: {exc}")
+
+    assert len(pages) == 1
+    page = pages[0]
+    assert page.payload, "Rasterized payload should not be empty"
+    assert page.payload.startswith(b"\x89PNG"), "Expected PNG rasterized payload"
